@@ -79,6 +79,41 @@ const monitor = new Monitor(new DeepTrust(), {
 await monitor.watch(conversationId, { user: caller });
 ```
 
+## VAPI webhooks
+
+```ts
+import { DeepTrust } from "deeptrust-ai/agents";
+import { Bridge } from "deeptrust-ai/agents/vapi";
+
+const bridge = new Bridge(new DeepTrust(), {
+  apiKey: process.env.VAPI_API_KEY!,
+});
+
+app.post("/vapi/webhook", async (req, res) => {   // your route, your server
+  await bridge.handle(req.body, { user: caller });
+  res.json({});
+});
+```
+
+VAPI is the mirror image of ElevenLabs: nobody holds a socket. VAPI posts its
+server-url events to your server, so this is a handler you call from your own
+route. Hand it every event — the ones that are not turns cost nothing, and they
+carry the call object the control URL is learned from.
+
+Nudges go back on the per-call HTTPS endpoint VAPI publishes as
+`monitor.controlUrl`, as an `add-message` with `triggerResponseEnabled: true`.
+That is an interrupt, so VAPI behaves like LiveKit rather than ElevenLabs: the
+agent responds to the nudge immediately. The URL comes off the payload when the
+event carries it and from `GET /call/{id}` when it does not — which is why the
+bridge wants a VAPI private key — then it is cached for the call. Inbound calls
+are the case this exists for: nobody placed the call, so there was no
+creation-time response to capture a URL from.
+
+Final transcripts only, so a sentence is not analysed once per partial.
+`monitor.listenUrl` is raw PCM audio and is ignored. `end-of-call-report` ends
+the DeepTrust session. `tool-calls` is not answered: blocking an action is
+`Session.check`, which is not implemented in this version.
+
 ## Keys
 
 ```bash
