@@ -102,8 +102,13 @@ app.post("/vapi", async (req, res) => {
 
 Only final `transcript` messages are read, and only caller turns are analyzed.
 The VAPI key is used to fetch `controlUrl` when a payload does not carry it,
-which is the usual case for inbound calls. The session is ended on
+which is the usual case for inbound calls; a `controlUrl` in the payload is only
+used when it is an https URL on a `vapi.ai` host. The session is ended on
 `end-of-call-report`.
+
+`handle` trusts what it is given. Verify the request is from VAPI before calling
+it, e.g. by checking the `x-vapi-secret` header against the server URL secret
+you configured in VAPI.
 
 ## Keys
 

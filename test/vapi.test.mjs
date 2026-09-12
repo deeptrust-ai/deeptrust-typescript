@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DeepTrust } from "../dist/agents/index.js";
-import { addMessageCommand, readTurn, Webhook } from "../dist/agents/vapi.js";
+import { addMessageCommand, isControlUrl, readTurn, Webhook } from "../dist/agents/vapi.js";
 
 const BASE = "https://example.test/api/v1";
 const CONTROL_URL = "https://phone-call-websocket.aws-us-west-2-backend-production2.vapi.ai/call_1/control";
@@ -43,6 +43,25 @@ describe("vapi", () => {
       "",
     ]);
     assert.deepEqual(readTurn({ type: "speech-update", status: "started" }), ["", ""]);
+  });
+
+  it("only accepts https controlUrls on a VAPI host from the payload", async () => {
+    assert.equal(isControlUrl(CONTROL_URL), true);
+    assert.equal(isControlUrl("http://phone-call.vapi.ai/call_1/control"), false);
+    assert.equal(isControlUrl("https://evil.example/vapi.ai"), false);
+    assert.equal(isControlUrl("https://notvapi.ai/x"), false);
+    assert.equal(isControlUrl("not a url"), false);
+
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const vapi = fakeVapi();
+    const webhook = new Webhook(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
+      apiKey: "vapi_test",
+      fetch: vapi.fetch,
+    });
+    const call = { id: "call_1", monitor: { controlUrl: "https://evil.example/control" } };
+    await webhook.handle(transcript("user", "final", "my colleague is telling me what to say", call));
+    assert.equal(vapi.calls[0].url, "https://api.vapi.ai/call/call_1");
+    assert.equal(vapi.calls[1].url, CONTROL_URL);
   });
 
   it("builds add-message commands that trigger a response", () => {

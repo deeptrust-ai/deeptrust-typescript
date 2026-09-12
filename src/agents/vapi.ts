@@ -22,9 +22,14 @@
  * turn. VAPI nudges therefore behave like LiveKit's interrupt, not like the
  * ElevenLabs contextual update.
  *
- * `controlUrl` is taken from the webhook payload when VAPI includes it, and
- * otherwise fetched once per call from `GET /call/{id}` with the VAPI API key.
- * `monitor.listenUrl` carries raw audio and is ignored.
+ * `controlUrl` is taken from the webhook payload when VAPI includes it and it
+ * points at a VAPI host, and otherwise fetched once per call from
+ * `GET /call/{id}` with the VAPI API key. `monitor.listenUrl` carries raw
+ * audio and is ignored.
+ *
+ * `handle` trusts the payload it is given. Verify the request first, for
+ * example by checking the `x-vapi-secret` header against the server URL
+ * secret configured in VAPI, and only then pass the body in.
  */
 
 import { ConfigError } from "../errors.js";
@@ -33,6 +38,7 @@ import type { DeepTrust } from "./index.js";
 import type { Session } from "./session.js";
 
 export const API_URL = "https://api.vapi.ai";
+export const CONTROL_URL_HOST = "vapi.ai";
 
 export function addMessageCommand(text: string) {
   return {
@@ -71,7 +77,7 @@ export class Webhook {
     this.deliver = options.deliver ?? true;
     this.onAnalysis = options.onAnalysis;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
-    this.apiUrl = (options.apiUrl ?? API_URL).replace(/\/+$/, "");
+    this.apiUrl = trimSlashes(options.apiUrl ?? API_URL);
   }
 
   /**
@@ -88,7 +94,7 @@ export class Webhook {
     }
 
     const monitor = objectValue(callInfo.monitor);
-    if (typeof monitor.controlUrl === "string" && monitor.controlUrl) {
+    if (typeof monitor.controlUrl === "string" && isControlUrl(monitor.controlUrl)) {
       this.controlUrls.set(callId, monitor.controlUrl);
     }
 
@@ -211,6 +217,26 @@ export function readTurn(message: Record<string, unknown>): ["user" | "agent" | 
 }
 
 export const _read_turn = readTurn;
+
+/** True for an https URL on a VAPI host. Anything else in a payload is ignored. */
+export function isControlUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  return url.protocol === "https:" && (host === CONTROL_URL_HOST || host.endsWith(`.${CONTROL_URL_HOST}`));
+}
+
+function trimSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
 
 function readMessage(payload: unknown): Record<string, unknown> {
   const body = objectValue(payload);
