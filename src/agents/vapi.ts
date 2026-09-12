@@ -34,6 +34,13 @@
  * `monitor.listenUrl` sits next to it and is deliberately ignored: it is a raw
  * PCM audio stream, not a channel anything can be sent on.
  *
+ * A control URL is only accepted if it is HTTPS on VAPI's own domain. The
+ * webhook body is attacker-reachable in the general case -- it arrives over
+ * the public internet at your route -- and a nudge names what DeepTrust found
+ * in the call, so a forged `monitor.controlUrl` would be a way to have this
+ * SDK post that text to a host of someone else's choosing. Anything off
+ * `vapi.ai` reads as no control URL rather than as an error.
+ *
  * Only final transcripts are read. VAPI emits a `transcript` event per partial
  * as the sentence is still being recognised, and analysing those re-analyses
  * the same sentence several times -- the same class of bug the LiveKit
@@ -50,6 +57,9 @@ import type { DeepTrust } from "./index.js";
 import type { Session } from "./session.js";
 
 export const API_BASE_URL = "https://api.vapi.ai";
+
+/** The only domain a control URL may point at. */
+const CONTROL_URL_DOMAIN = "vapi.ai";
 
 /**
  * The control-URL body that delivers a nudge as an interrupt.
@@ -197,7 +207,9 @@ export class Bridge {
       return cached;
     }
 
-    const response = await this.fetchImpl(`${this.baseUrl}/call/${callId}`, {
+    // Encoded: the id comes off a webhook body, and a raw `/` or `?` in it
+    // would address a different endpoint of the API than the call lookup.
+    const response = await this.fetchImpl(`${this.baseUrl}/call/${encodeURIComponent(callId)}`, {
       headers: { authorization: `Bearer ${this.key}` },
     });
     if (!response.ok) {
@@ -278,7 +290,32 @@ export function readMessage(payload: unknown): Record<string, unknown> {
 function monitorControlUrl(call: Record<string, unknown>): string | undefined {
   const monitor = objectValue(call.monitor);
   const url = monitor.controlUrl;
-  return typeof url === "string" && url ? url : undefined;
+  if (typeof url !== "string" || !url) {
+    return undefined;
+  }
+  return isVapiControlUrl(url) ? url : undefined;
+}
+
+/**
+ * Whether a URL is one VAPI could have minted: HTTPS, on `vapi.ai`.
+ *
+ * The check is on the host rather than the full URL because VAPI mints these
+ * per region and per call -- the path and the subdomain both vary -- while the
+ * domain is the part that says the destination is VAPI and not somewhere a
+ * forged webhook pointed us.
+ */
+function isVapiControlUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return host === CONTROL_URL_DOMAIN || host.endsWith(`.${CONTROL_URL_DOMAIN}`);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

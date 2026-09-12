@@ -109,6 +109,12 @@ bridge wants a VAPI private key — then it is cached for the call. Inbound call
 are the case this exists for: nobody placed the call, so there was no
 creation-time response to capture a URL from.
 
+A control URL is only used if it is HTTPS on `vapi.ai`. Your webhook route is
+reachable from the internet and a nudge names what was found in the call, so a
+forged `monitor.controlUrl` would otherwise be a way to make this SDK post that
+text to someone else's host. Anything off that domain is treated as no URL, and
+the bridge asks VAPI for the real one.
+
 Final transcripts only, so a sentence is not analysed once per partial.
 `monitor.listenUrl` is raw PCM audio and is ignored. `end-of-call-report` ends
 the DeepTrust session. `tool-calls` is not answered: blocking an action is

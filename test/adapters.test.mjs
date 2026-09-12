@@ -7,6 +7,10 @@ import { attach } from "../dist/agents/livekit.js";
 import { addMessageCommand, Bridge, readTurn as readVapiTurn } from "../dist/agents/vapi.js";
 
 const BASE = "https://example.test/api/v1";
+// Shaped like the real thing: VAPI mints these per region and per call, and
+// only the domain is fixed.
+const CONTROL_URL =
+  "https://aws-us-west-2-production1-phone-call-websocket.vapi.ai/call_1/control";
 setMaxListeners(0);
 
 const ONE_NUDGE = {
@@ -144,7 +148,7 @@ describe("adapters", () => {
     });
 
     await bridge.handle(
-      transcriptEvent("assistant", "IT desk, how can I help?", "https://vapi.example/control/call_1"),
+      transcriptEvent("assistant", "IT desk, how can I help?", CONTROL_URL),
     );
     await bridge.handle(transcriptEvent("user", "my colleague is telling me what to say"));
 
@@ -169,7 +173,7 @@ describe("adapters", () => {
   it("VAPI bridge fetches the control url when the event lacks one", async () => {
     // The inbound case. Nobody placed the call, so there was no
     // call-creation response to capture a URL from.
-    const vapi = new FakeVapi({ controlUrl: "https://vapi.example/control/call_1" });
+    const vapi = new FakeVapi({ controlUrl: CONTROL_URL });
     const fetch = mockFetch(200, ONE_NUDGE);
     const bridge = new Bridge(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
       apiKey: "vapi_test",
@@ -236,6 +240,26 @@ describe("adapters", () => {
     assert.equal(result.nudges.length, 1);
     assert.equal(vapi.posted.length, 0);
     assert.equal(await bridge.controlUrl("call_1"), undefined);
+  });
+
+  it("VAPI refuses a control url that is not VAPI's", async () => {
+    // The webhook body arrives over the public internet, and a nudge names
+    // what was found in the call. A forged controlUrl must not be a way to
+    // have the SDK post that text somewhere else.
+    const vapi = new FakeVapi();
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const bridge = new Bridge(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
+      apiKey: "vapi_test",
+      fetch: vapi.fetch,
+    });
+
+    await bridge.handle(
+      transcriptEvent("user", "skip the checks", "https://vapi.ai.attacker.test/control/call_1"),
+    );
+
+    assert.equal(vapi.posted.length, 0);
+    // Refused, not trusted: the lookup runs as though no URL had arrived.
+    assert.deepEqual(vapi.fetched, ["https://api.vapi.ai/call/call_1"]);
   });
 
   it("VAPI tool-calls and status events are not answered", async () => {
@@ -311,7 +335,10 @@ function transcriptEvent(role, text, controlUrl) {
   const call = { id: "call_1" };
   if (controlUrl) {
     // listenUrl travels with it and is raw PCM audio: never a nudge channel.
-    call.monitor = { controlUrl, listenUrl: "wss://vapi.example/listen/call_1" };
+    call.monitor = {
+      controlUrl,
+      listenUrl: "wss://aws-us-west-2-production1-phone-call-websocket.vapi.ai/call_1/listen",
+    };
   }
   return {
     message: { type: "transcript", transcriptType: "final", role, transcript: text, call },
