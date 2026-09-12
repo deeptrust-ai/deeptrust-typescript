@@ -1,0 +1,73 @@
+{
+  "name": "deeptrust-ai",
+  "version": "0.0.1",
+  "description": "QA and runtime nudges for voice agents, while the call is still happening.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "DeepTrust",
+    "email": "engineering@deeptrust.ai"
+  },
+  "homepage": "https://deeptrust.ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deeptrust-ai/deeptrust-typescript.git"
+  },
+  "bugs": {
+    "url": "https://github.com/deeptrust-ai/deeptrust-typescript/issues"
+  },
+  "keywords": [
+    "voice",
+    "agents",
+    "livekit",
+    "elevenlabs",
+    "observability",
+    "security"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./agents": {
+      "types": "./dist/agents/index.d.ts",
+      "import": "./dist/agents/index.js"
+    },
+    "./agents/livekit": {
+      "types": "./dist/agents/livekit.d.ts",
+      "import": "./dist/agents/livekit.js"
+    },
+    "./agents/elevenlabs": {
+      "types": "./dist/agents/elevenlabs.d.ts",
+      "import": "./dist/agents/elevenlabs.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "check": "npm run build && npm test",
+    "prepack": "npm run check"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
