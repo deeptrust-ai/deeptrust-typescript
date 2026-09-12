@@ -21,6 +21,7 @@
     "agents",
     "livekit",
     "elevenlabs",
+    "vapi",
     "observability",
     "security"
   ],
@@ -45,6 +46,10 @@
     "./agents/elevenlabs": {
       "types": "./dist/agents/elevenlabs.d.ts",
       "import": "./dist/agents/elevenlabs.js"
+    },
+    "./agents/vapi": {
+      "types": "./dist/agents/vapi.d.ts",
+      "import": "./dist/agents/vapi.js"
     }
   },
   "main": "./dist/index.js",

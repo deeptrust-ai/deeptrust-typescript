@@ -79,6 +79,32 @@ const monitor = new Monitor(new DeepTrust(), {
 await monitor.watch(conversationId, { user: caller });
 ```
 
+## VAPI webhook
+
+VAPI posts server messages to your own webhook route, so nothing is held open.
+Call `handle` with the parsed body; nudges go back out over the call's
+`monitor.controlUrl` as an `add-message` with `triggerResponseEnabled`, so the
+agent responds to them straight away.
+
+```ts
+import { DeepTrust } from "deeptrust-ai/agents";
+import { Webhook } from "deeptrust-ai/agents/vapi";
+
+const webhook = new Webhook(new DeepTrust(), {
+  apiKey: process.env.VAPI_API_KEY!,
+});
+
+app.post("/vapi", async (req, res) => {
+  await webhook.handle(req.body, { user: caller });
+  res.status(200).end();
+});
+```
+
+Only final `transcript` messages are read, and only caller turns are analyzed.
+The VAPI key is used to fetch `controlUrl` when a payload does not carry it,
+which is the usual case for inbound calls. The session is ended on
+`end-of-call-report`.
+
 ## Keys
 
 ```bash
