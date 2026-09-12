@@ -117,7 +117,7 @@ export class Bridge {
     this.key = options.apiKey;
     this.deliver = options.deliver ?? true;
     this.onAnalysis = options.onAnalysis;
-    this.baseUrl = (options.baseUrl ?? API_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(options.baseUrl ?? API_BASE_URL);
     this.fetchImpl = options.fetch ?? globalThis.fetch;
   }
 
@@ -277,6 +277,20 @@ export function readMessage(payload: unknown): Record<string, unknown> {
   const body = objectValue(payload);
   const message = body.message;
   return isObject(message) ? message : body;
+}
+
+/**
+ * A base URL without its trailing slashes, so a path can be appended to it.
+ *
+ * A loop rather than a `/\/+$/` replace: the regex backtracks over a run of
+ * slashes, and this string comes from the caller's configuration.
+ */
+function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url[end - 1] === "/") {
+    end -= 1;
+  }
+  return url.slice(0, end);
 }
 
 /**
