@@ -83,17 +83,39 @@ await monitor.watch(conversationId, { user: caller });
 
 ```ts
 import { DeepTrust } from "deeptrust-ai/agents";
-import { Bridge } from "deeptrust-ai/agents/vapi";
+import { Bridge, WebhookVerificationError } from "deeptrust-ai/agents/vapi";
 
 const bridge = new Bridge(new DeepTrust(), {
   apiKey: process.env.VAPI_API_KEY!,
+  secret: process.env.VAPI_WEBHOOK_SECRET!,     // see below, do not skip it
 });
 
 app.post("/vapi/webhook", async (req, res) => {   // your route, your server
-  await bridge.handle(req.body, { user: caller });
+  try {
+    await bridge.handle(req.body, { user: caller, headers: req.headers });
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return res.status(401).json({});
+    throw err;
+  }
   res.json({});
 });
 ```
+
+### Verify the webhook
+
+Your route is a public URL. Anyone who learns it can post a transcript that was
+never said, and it becomes a real call, a real analysis and a real finding in
+your organization. A forged `end-of-call-report` can also end a real call's
+session early.
+
+Set `server.secret` on the assistant, which is the Authorization section of its
+Webhook Server settings. VAPI sends it back in `X-Vapi-Secret` on every request.
+Pass the same value as `secret`, hand `handle` the request headers, and a
+request without it is refused before a single turn is recorded. The compare is
+constant time.
+
+The bridge does not require it, so an existing integration keeps working, but a
+bridge with no `secret` trusts whatever arrives.
 
 VAPI is the mirror image of ElevenLabs: nobody holds a socket. VAPI posts its
 server-url events to your server, so this is a handler you call from your own

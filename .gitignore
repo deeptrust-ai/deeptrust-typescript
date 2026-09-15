@@ -3,3 +3,6 @@ dist/
 coverage/
 *.tgz
 .DS_Store
+
+# Example env files hold real keys
+examples/*/.env

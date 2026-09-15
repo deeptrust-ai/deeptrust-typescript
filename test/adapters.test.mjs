@@ -4,7 +4,15 @@ import { describe, it } from "node:test";
 import { DeepTrust } from "../dist/agents/index.js";
 import { contextualUpdateCommand, Monitor, readTurn } from "../dist/agents/elevenlabs.js";
 import { attach } from "../dist/agents/livekit.js";
-import { addMessageCommand, Bridge, readTurn as readVapiTurn } from "../dist/agents/vapi.js";
+import {
+  addMessageCommand,
+  Bridge,
+  readHeader,
+  readTurn as readVapiTurn,
+  SECRET_HEADER,
+  timingSafeEqual,
+  WebhookVerificationError,
+} from "../dist/agents/vapi.js";
 
 const BASE = "https://example.test/api/v1";
 // Shaped like the real thing: VAPI mints these per region and per call, and
@@ -388,3 +396,64 @@ function mockFetch(status, payload) {
 async function wait() {
   await new Promise((resolve) => setTimeout(resolve, 25));
 }
+
+describe("vapi webhook verification", () => {
+  const transcript = {
+    message: {
+      type: "transcript",
+      transcriptType: "final",
+      role: "user",
+      transcript: "reset my password",
+      call: { id: "c1", monitor: { controlUrl: "https://api.vapi.ai/call/c1/control" } },
+    },
+  };
+
+  const bridgeWith = (secret) =>
+    new Bridge(new DeepTrust({ apiKey: "k", baseUrl: "http://127.0.0.1:1/v1" }), {
+      apiKey: "vapi-key",
+      ...(secret === undefined ? {} : { secret }),
+      deliver: false,
+      fetch: async () => {
+        throw new Error("no network in this test");
+      },
+    });
+
+  it("refuses a request that does not carry the secret", async () => {
+    await assert.rejects(
+      () => bridgeWith("s3cret").handle(transcript, { headers: {} }),
+      WebhookVerificationError,
+    );
+  });
+
+  it("refuses a wrong secret", async () => {
+    await assert.rejects(
+      () => bridgeWith("s3cret").handle(transcript, { headers: { [SECRET_HEADER]: "nope" } }),
+      WebhookVerificationError,
+    );
+  });
+
+  it("records nothing when verification fails", async () => {
+    const bridge = bridgeWith("s3cret");
+    await assert.rejects(() => bridge.handle(transcript, { headers: {} }));
+    assert.equal(bridge.session("c1"), undefined);
+  });
+
+  it("keeps working when no secret is configured", () => {
+    assert.equal(bridgeWith(undefined).verify(undefined), true);
+  });
+
+  it("reads the header case-insensitively, from an object or a Headers", () => {
+    const bridge = bridgeWith("s3cret");
+    assert.equal(bridge.verify({ "X-Vapi-Secret": "s3cret" }), true);
+    assert.equal(bridge.verify(new Headers({ "x-vapi-secret": "s3cret" })), true);
+    assert.equal(bridge.verify({ "x-vapi-secret": ["s3cret"] }), true);
+    assert.equal(bridge.verify({}), false);
+  });
+
+  it("compares in constant time and still compares", () => {
+    assert.equal(timingSafeEqual("abc", "abc"), true);
+    assert.equal(timingSafeEqual("abc", "abd"), false);
+    assert.equal(timingSafeEqual("abc", "abcd"), false);
+    assert.equal(readHeader(undefined, SECRET_HEADER), "");
+  });
+});

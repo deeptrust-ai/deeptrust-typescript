@@ -58,6 +58,60 @@ import type { Session } from "./session.js";
 
 export const API_BASE_URL = "https://api.vapi.ai";
 
+/** The header VAPI echoes `server.secret` back in. */
+export const SECRET_HEADER = "x-vapi-secret";
+
+/** Headers as any common server hands them over. */
+export type HeadersLike =
+  | Headers
+  | Record<string, string | string[] | undefined>
+  | undefined;
+
+/** Thrown by `handle` when the request did not carry the configured secret. */
+export class WebhookVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WebhookVerificationError";
+  }
+}
+
+/** One header, from a `Headers` instance or a plain object, case-insensitively. */
+export function readHeader(headers: HeadersLike, name: string): string {
+  if (!headers) {
+    return "";
+  }
+  if (typeof (headers as Headers).get === "function") {
+    return (headers as Headers).get(name) ?? "";
+  }
+  const lowered = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
+    if (key.toLowerCase() !== lowered) {
+      continue;
+    }
+    return Array.isArray(value) ? String(value[0] ?? "") : String(value ?? "");
+  }
+  return "";
+}
+
+/**
+ * Constant-time string compare.
+ *
+ * Hand-rolled rather than `crypto.timingSafeEqual` so this module stays
+ * runtime-agnostic: the same file runs on Node, Bun, Deno and the edge, and
+ * only Node has that function. Length is compared first because it leaks
+ * anyway, through the size of the request a caller can send.
+ */
+export function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 /** The only domain a control URL may point at. */
 const CONTROL_URL_DOMAIN = "vapi.ai";
 
@@ -78,6 +132,16 @@ export function addMessageCommand(text: string) {
 
 export interface BridgeOptions {
   apiKey: string;
+  /**
+   * The value VAPI sends back in `X-Vapi-Secret`, from the assistant's
+   * `server.secret`. Set it and pass the request headers to `handle`, and a
+   * request that does not carry it is refused before anything is recorded.
+   *
+   * Your webhook is a public URL. Without this, anyone who learns it can post
+   * a transcript that was never said, and it becomes a real call, a real
+   * analysis and a real finding in your organization.
+   */
+  secret?: string;
   deliver?: boolean;
   onAnalysis?: (analysis: unknown) => void;
   baseUrl?: string;
@@ -94,6 +158,7 @@ export interface BridgeOptions {
 export class Bridge {
   private readonly dt: DeepTrust;
   private readonly key: string;
+  private readonly secret: string | undefined;
   private readonly deliver: boolean;
   private readonly onAnalysis: ((analysis: unknown) => void) | undefined;
   private readonly baseUrl: string;
@@ -115,6 +180,7 @@ export class Bridge {
     }
     this.dt = dt;
     this.key = options.apiKey;
+    this.secret = options.secret;
     this.deliver = options.deliver ?? true;
     this.onAnalysis = options.onAnalysis;
     this.baseUrl = trimTrailingSlashes(options.baseUrl ?? API_BASE_URL);
@@ -130,7 +196,15 @@ export class Bridge {
    *
    * Resolves to null for an event that started no job, which is most of them.
    */
-  async handle(payload: unknown, options: { user?: User } = {}): Promise<Analysis | null> {
+  async handle(
+    payload: unknown,
+    options: { user?: User; headers?: HeadersLike } = {},
+  ): Promise<Analysis | null> {
+    if (!this.verify(options.headers)) {
+      throw new WebhookVerificationError(
+        "the request did not carry the VAPI secret. Set server.secret on the assistant and pass the request headers to handle.",
+      );
+    }
     const message = readMessage(payload);
     const call = objectValue(message.call);
     const callId = String(call.id ?? "");
@@ -176,6 +250,21 @@ export class Bridge {
       }
     }
     return result;
+  }
+
+  /**
+   * Whether a request carries the configured secret.
+   *
+   * True when no secret is configured, so an existing integration keeps
+   * working; the README says what that costs. Compared in constant time, so a
+   * caller cannot learn the secret one character at a time from how long the
+   * refusal took.
+   */
+  verify(headers: HeadersLike | undefined): boolean {
+    if (!this.secret) {
+      return true;
+    }
+    return timingSafeEqual(readHeader(headers, SECRET_HEADER), this.secret);
   }
 
   /**
