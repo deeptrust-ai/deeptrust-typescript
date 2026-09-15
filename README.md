@@ -79,6 +79,69 @@ const monitor = new Monitor(new DeepTrust(), {
 await monitor.watch(conversationId, { user: caller });
 ```
 
+## VAPI webhooks
+
+```ts
+import { DeepTrust } from "deeptrust-ai/agents";
+import { Bridge, WebhookVerificationError } from "deeptrust-ai/agents/vapi";
+
+const bridge = new Bridge(new DeepTrust(), {
+  apiKey: process.env.VAPI_API_KEY!,
+  secret: process.env.VAPI_WEBHOOK_SECRET!,     // see below, do not skip it
+});
+
+app.post("/vapi/webhook", async (req, res) => {   // your route, your server
+  try {
+    await bridge.handle(req.body, { user: caller, headers: req.headers });
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return res.status(401).json({});
+    throw err;
+  }
+  res.json({});
+});
+```
+
+### Verify the webhook
+
+Your route is a public URL. Anyone who learns it can post a transcript that was
+never said, and it becomes a real call, a real analysis and a real finding in
+your organization. A forged `end-of-call-report` can also end a real call's
+session early.
+
+Set `server.secret` on the assistant, which is the Authorization section of its
+Webhook Server settings. VAPI sends it back in `X-Vapi-Secret` on every request.
+Pass the same value as `secret`, hand `handle` the request headers, and a
+request without it is refused before a single turn is recorded. The compare is
+constant time.
+
+The bridge does not require it, so an existing integration keeps working, but a
+bridge with no `secret` trusts whatever arrives.
+
+VAPI is the mirror image of ElevenLabs: nobody holds a socket. VAPI posts its
+server-url events to your server, so this is a handler you call from your own
+route. Hand it every event — the ones that are not turns cost nothing, and they
+carry the call object the control URL is learned from.
+
+Nudges go back on the per-call HTTPS endpoint VAPI publishes as
+`monitor.controlUrl`, as an `add-message` with `triggerResponseEnabled: true`.
+That is an interrupt, so VAPI behaves like LiveKit rather than ElevenLabs: the
+agent responds to the nudge immediately. The URL comes off the payload when the
+event carries it and from `GET /call/{id}` when it does not — which is why the
+bridge wants a VAPI private key — then it is cached for the call. Inbound calls
+are the case this exists for: nobody placed the call, so there was no
+creation-time response to capture a URL from.
+
+A control URL is only used if it is HTTPS on `vapi.ai`. Your webhook route is
+reachable from the internet and a nudge names what was found in the call, so a
+forged `monitor.controlUrl` would otherwise be a way to make this SDK post that
+text to someone else's host. Anything off that domain is treated as no URL, and
+the bridge asks VAPI for the real one.
+
+Final transcripts only, so a sentence is not analysed once per partial.
+`monitor.listenUrl` is raw PCM audio and is ignored. `end-of-call-report` ends
+the DeepTrust session. `tool-calls` is not answered: blocking an action is
+`Session.check`, which is not implemented in this version.
+
 ## Keys
 
 ```bash
