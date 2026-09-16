@@ -1,0 +1,31 @@
+name: CI
+
+# Nothing ran on pull requests before this. The package has a test suite and a
+# type check; neither was a gate, so a red build could reach main and only be
+# noticed at publish time, when prepack finally runs them.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json claims engines >= 18. 18 is end-of-life, so it is not
+        # gated here; see the pull request for whether that claim should be
+        # narrowed to >= 20 instead.
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: src/version.ts is in step with package.json
+        run: node scripts/sync-version.mjs --check
+      - run: npm run build
+      - run: npm test
