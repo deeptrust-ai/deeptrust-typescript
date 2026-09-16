@@ -41,8 +41,6 @@ jobs:
             exit 1
           fi
       # prepack runs build + test, so a broken tree cannot be published.
-      # --provenance ties the tarball back to this workflow run; it needs a
-      # public repository, which this one is.
       - run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
