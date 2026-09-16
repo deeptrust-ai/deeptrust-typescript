@@ -23,9 +23,14 @@ cp .env.example .env             # then fill it in
 ## 2. Run it, and give it a public URL
 
 ```bash
-node server.mjs                      # :8095
+node --env-file=.env server.mjs      # :8095
 cloudflared tunnel --url http://localhost:8095
 ```
+
+`--env-file` is load-bearing: nothing in this package reads a `.env` (the only
+dependency is `ws`), so `node server.mjs` starts with none of the keys set and
+fails on the first DeepTrust call with `no API key`. It needs Node 20.6+; on
+anything older, export the variables instead.
 
 ## 3. Point the assistant at it, with a secret
 
@@ -64,5 +69,5 @@ instead, which needs the org's VAPI key connected in the dashboard.
 so the whole path can be exercised with no VAPI account:
 
 ```bash
-node replay.mjs
+node --env-file=.env replay.mjs
 ```
