@@ -15,7 +15,10 @@ on:
   # transient registry failure.
   workflow_dispatch:
 
-# id-token lets npm mint a provenance attestation from this run.
+# The package is published through npm trusted publishing: npm trusts this
+# repository and workflow filename directly, so there is no token to leak or
+# rotate. id-token: write is what lets the runner mint the OIDC token that
+# stands in for one.
 permissions:
   contents: read
   id-token: write
@@ -30,6 +33,9 @@ jobs:
           node-version: "22"
           cache: npm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; Node 22 still bundles npm 10.
+      # Without this the publish falls back to looking for a token and fails.
+      - run: npm install -g npm@^11.5.1
       - run: npm ci
       - name: Release tag matches package.json version
         if: github.event_name == 'release'
@@ -41,6 +47,6 @@ jobs:
             exit 1
           fi
       # prepack runs build + test, so a broken tree cannot be published.
-      - run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # No --provenance flag: trusted publishing attests a public repository's
+      # packages on its own.
+      - run: npm publish
