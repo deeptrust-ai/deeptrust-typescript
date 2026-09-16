@@ -15,6 +15,11 @@ on:
   # transient registry failure.
   workflow_dispatch:
 
+# id-token lets npm mint a provenance attestation from this run.
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -36,7 +41,6 @@ jobs:
             exit 1
           fi
       # prepack runs build + test, so a broken tree cannot be published.
-      # No --provenance: it requires a public repository and this one is private.
-      - run: npm publish
+      - run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
