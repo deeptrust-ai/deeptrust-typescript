@@ -120,6 +120,84 @@ describe("adapters", () => {
     ]);
   });
 
+  it("ElevenLabs monitor ends the DeepTrust call when the socket closes", async () => {
+    // Without this the call sits ACTIVE until the backend's 20-minute
+    // stale-call sweep, and post-processing -- the call name, the voice
+    // analysis -- only runs once it is ended.
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const socket = new FakeSocket();
+    const monitor = new Monitor(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
+      apiKey: "xi_test",
+      deliver: false,
+      connect: () => socket,
+    });
+
+    await monitor.watch("conv_1");
+    socket.emitMessage({
+      type: "user_transcript",
+      user_transcription_event: { user_transcript: "reset my password" },
+    });
+    await wait();
+
+    socket.emit("close");
+    await wait();
+
+    const ended = fetch.calls.filter((call) => String(call[0]).endsWith("/agents/sessions/sess_1/end"));
+    assert.equal(ended.length, 1);
+    assert.equal(ended[0][1].method, "POST");
+    assert.equal(monitor.isWatching("conv_1"), false);
+  });
+
+  it("ElevenLabs monitor does not end the call on a socket error", async () => {
+    // The socket may come back. Ending here would let a re-watch open a second
+    // call for one conversation and split the transcript across both.
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const socket = new FakeSocket();
+    const monitor = new Monitor(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
+      apiKey: "xi_test",
+      deliver: false,
+      connect: () => socket,
+    });
+
+    await monitor.watch("conv_1");
+    socket.emitMessage({
+      type: "user_transcript",
+      user_transcription_event: { user_transcript: "reset my password" },
+    });
+    await wait();
+
+    socket.emit("error", new Error("connection reset"));
+    await wait();
+
+    assert.equal(fetch.calls.filter((call) => String(call[0]).endsWith("/end")).length, 0);
+    // Untracked all the same, so the next watch can reattach to the same call.
+    assert.equal(monitor.isWatching("conv_1"), false);
+  });
+
+  it("ElevenLabs monitor.stop ends the call once", async () => {
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const socket = new FakeSocket();
+    const monitor = new Monitor(new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
+      apiKey: "xi_test",
+      deliver: false,
+      connect: () => socket,
+    });
+
+    await monitor.watch("conv_1");
+    socket.emitMessage({
+      type: "user_transcript",
+      user_transcription_event: { user_transcript: "reset my password" },
+    });
+    await wait();
+
+    await monitor.stop("conv_1");
+    // The close a real socket fires on its way out must not end it twice.
+    socket.emit("close");
+    await wait();
+
+    assert.equal(fetch.calls.filter((call) => String(call[0]).endsWith("/end")).length, 1);
+  });
+
   it("builds VAPI add-message commands as interrupts", () => {
     // triggerResponseEnabled is the whole difference between a nudge that cuts
     // in and one that waits for the agent's next turn.

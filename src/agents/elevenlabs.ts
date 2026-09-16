@@ -2,6 +2,7 @@ import { WebSocket } from "ws";
 import { ConfigError } from "../errors.js";
 import type { User } from "../types.js";
 import type { DeepTrust } from "./index.js";
+import type { Session } from "./session.js";
 
 export const MONITOR_URL = "wss://api.elevenlabs.io/v1/convai/conversations/{cid}/monitor";
 
@@ -33,13 +34,22 @@ export interface MonitorOptions {
   connect?: MonitorConnect;
 }
 
+interface Watched {
+  ws: WebSocketLike;
+  session: Session;
+}
+
 export class Monitor {
   private readonly dt: DeepTrust;
   private readonly key: string;
   private readonly deliver: boolean;
   private readonly onAnalysis: ((analysis: unknown) => void) | undefined;
   private readonly connect: MonitorConnect;
-  private readonly watching = new Map<string, WebSocketLike>();
+  // The session is held alongside the socket, not discarded after `watch`.
+  // Ending the DeepTrust call is what runs post-processing on it -- the name,
+  // the voice analysis, the findings -- so a session nobody can reach is a
+  // call that stays open until the backend's stale-call sweep gets to it.
+  private readonly watching = new Map<string, Watched>();
 
   constructor(dt: DeepTrust, options: MonitorOptions) {
     if (!options.apiKey) {
@@ -62,12 +72,12 @@ export class Monitor {
     }
     const url = MONITOR_URL.replace("{cid}", conversationId);
     const ws = this.connect(url, { headers: { "xi-api-key": this.key } });
-    this.watching.set(conversationId, ws);
     const call = this.dt.session({
       externalId: conversationId,
       platform: "elevenlabs",
       ...(options.user !== undefined ? { user: options.user } : {}),
     });
+    this.watching.set(conversationId, { ws, session: call });
 
     ws.on("message", (data) => {
       void (async () => {
@@ -96,18 +106,59 @@ export class Monitor {
         }
       })();
     });
-    ws.on("close", () => this.watching.delete(conversationId));
-    ws.on("error", () => this.watching.delete(conversationId));
+    // A close is the conversation finishing: ElevenLabs closes the monitor
+    // socket when the call ends, so this is the signal to end the DeepTrust
+    // call too.
+    ws.on("close", () => {
+      void this.release(conversationId, true);
+    });
+    // An error is not. The socket may come back, and ending here would mean a
+    // re-watch opens a *second* call for one conversation and splits the
+    // transcript across both. Untracking without ending lets `watch` run
+    // again and reattach to the same still-active call; the backend's
+    // stale-call sweep remains the backstop if it never does.
+    ws.on("error", () => {
+      void this.release(conversationId, false);
+    });
   }
 
   async stop(conversationId: string): Promise<void> {
-    const ws = this.watching.get(conversationId);
+    const watched = this.watching.get(conversationId);
+    // Untracked first, so the socket's own close handler finds nothing and
+    // this is the only end.
     this.watching.delete(conversationId);
-    ws?.close?.();
+    watched?.ws.close?.();
+    if (watched) {
+      await watched.session.end();
+    }
   }
 
   isWatching(conversationId: string): boolean {
     return this.watching.has(conversationId);
+  }
+
+  /**
+   * Drop a conversation, ending its DeepTrust call when `end` is set.
+   *
+   * Idempotent: whichever of close, error or `stop` arrives first takes the
+   * entry, and the rest are no-ops. A failure to end is swallowed -- this runs
+   * from a socket event with nowhere to throw, and the call still closes on
+   * the backend's stale-call sweep.
+   */
+  private async release(conversationId: string, end: boolean): Promise<void> {
+    const watched = this.watching.get(conversationId);
+    if (!watched) {
+      return;
+    }
+    this.watching.delete(conversationId);
+    if (!end) {
+      return;
+    }
+    try {
+      await watched.session.end();
+    } catch {
+      // Intentionally ignored; see above.
+    }
   }
 }
 
