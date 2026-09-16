@@ -159,3 +159,23 @@ npm install
 npm run check
 npm pack --dry-run
 ```
+
+`src/version.ts` is generated from `package.json` by `prebuild`; edit the
+version in `package.json` only. CI fails a pull request whose committed
+`src/version.ts` is stale.
+
+## Releasing
+
+npm does not follow `main`. A merge publishes nothing, so the package lags
+until someone cuts a release.
+
+1. Bump `version` in `package.json` on a branch, run `npm run build` so
+   `src/version.ts` follows, and merge it.
+2. Cut a GitHub Release tagged `v<version>`, matching `package.json` exactly.
+   The publish workflow refuses a tag that does not match rather than shipping
+   a version nobody meant.
+
+`.github/workflows/publish.yml` then runs `npm publish` with the `NPM_TOKEN`
+repository secret. `prepack` runs the build and the tests first, so a broken
+tree cannot reach the registry. npm refuses to republish an existing version,
+so every release needs its own bump.

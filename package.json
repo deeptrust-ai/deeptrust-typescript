@@ -1,6 +1,6 @@
 {
   "name": "deeptrust-ai",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "QA and runtime nudges for voice agents, while the call is still happening.",
   "type": "module",
   "license": "Apache-2.0",
@@ -56,6 +56,7 @@
   "types": "./dist/index.d.ts",
   "sideEffects": false,
   "scripts": {
+    "prebuild": "node scripts/sync-version.mjs",
     "build": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.mjs",
     "check": "npm run build && npm test",

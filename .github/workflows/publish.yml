@@ -1,0 +1,42 @@
+name: Publish
+
+# Publishing is manual today: 0.0.1 went out from somebody's laptop on
+# 2026-09-12 and nothing has shipped since, so main has carried unpublished
+# work -- the VAPI adapter and the ElevenLabs end-of-call fix -- with no signal
+# that npm was behind.
+#
+# Cutting a GitHub Release is now the trigger. Tag it v<version> matching
+# package.json; the guard below refuses the mismatch rather than publishing
+# something nobody meant to.
+on:
+  release:
+    types: [published]
+  # For a release that was cut before this workflow existed, or a retry after a
+  # transient registry failure.
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Release tag matches package.json version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(jq -r .version package.json)"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::release tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
+      # prepack runs build + test, so a broken tree cannot be published.
+      # No --provenance: it requires a public repository and this one is private.
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
