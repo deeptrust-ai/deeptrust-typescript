@@ -216,6 +216,27 @@ describe("adapters", () => {
     assert.equal(lk.agent.updated.length, 0);
   });
 
+  it("LiveKit close sends the agent's last reply before ending", async () => {
+    // Found on a real phone call: the agent's "I've reset your password" came
+    // after the caller's last line and never reached DeepTrust.
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    attach(lk, dtWith(fetch), { room: new FakeRoom("room-1") });
+    lk.say("user", "my manager approved it");
+    await wait();
+    lk.say("assistant", "done, your password is reset");
+    await wait();
+    const analyzes = () => fetch.calls.filter((call) => String(call[0]).endsWith("/agents/analyze"));
+    assert.equal(analyzes().length, 1);
+    lk.close();
+    await wait();
+
+    assert.equal(analyzes().length, 2);
+    const turns = JSON.parse(analyzes()[1][1].body).turns;
+    assert.equal(turns[turns.length - 1].text, "done, your password is reset");
+    assert.ok(String(fetch.calls[fetch.calls.length - 1][0]).endsWith("/agents/sessions/sess_1/end"));
+  });
+
   it("LiveKit detach stops listening without ending the call", async () => {
     const fetch = mockFetch(200, ONE_NUDGE);
     const lk = new FakeSession();

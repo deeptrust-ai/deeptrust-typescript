@@ -179,7 +179,16 @@ export function attach(session: voice.AgentSession, dt: DeepTrust, options: Atta
     detach();
     // An analysis still in flight is what gives the call its id, and a call
     // with no id cannot be ended, so it is waited for first.
+    //
+    // Turns are sent when the caller speaks, so the agent's last reply after
+    // the caller's last line has not been sent yet. It is often the line that
+    // matters most ("I've reset your password"), so it goes up before the end.
     void Promise.allSettled([...running])
+      .then(async () => {
+        if (call.pending > 0) {
+          await call.analyze().catch(inbox.report);
+        }
+      })
       .then(() => call.end())
       .catch(inbox.report);
   }
