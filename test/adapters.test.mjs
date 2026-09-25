@@ -3,7 +3,7 @@ import { EventEmitter, setMaxListeners } from "node:events";
 import { describe, it } from "node:test";
 import { DeepTrust } from "../dist/agents/index.js";
 import { contextualUpdateCommand, Monitor, readTurn } from "../dist/agents/elevenlabs.js";
-import { attach } from "../dist/agents/livekit.js";
+import { attach, listen, NUDGE_TOPIC, readNudgePacket } from "../dist/agents/livekit.js";
 import {
   addMessageCommand,
   Bridge,
@@ -38,32 +38,256 @@ const ONE_NUDGE = {
 };
 
 describe("adapters", () => {
-  it("LiveKit analyzes caller turns and delivers once", async () => {
+  it("LiveKit appends every turn and analyzes caller turns", async () => {
     const fetch = mockFetch(200, ONE_NUDGE);
     const lk = new FakeSession();
-    const call = attach(lk, new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
-      externalId: "room-1",
-    });
+    const attached = attach(lk, dtWith(fetch), { externalId: "room-1" });
+    lk.say("assistant", "IT desk, how can I help?");
     lk.say("user", "my colleague is telling me what to say");
     await wait();
+
+    // One job, for the one caller turn.
     assert.equal(fetch.calls.length, 1);
-    assert.equal(call.transcript.length, 1);
+    const call = attached.session;
+    assert.equal(call.platform, "livekit");
+    assert.equal(call.externalId, "room-1");
+    assert.deepEqual(
+      call.transcript.turns.map((turn) => turn.role),
+      ["agent", "user"],
+    );
+  });
+
+  it("LiveKit injects an analyzed nudge once, into the context and not the instructions", async () => {
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    attach(lk, dtWith(fetch), { externalId: "room-1" });
+    lk.say("user", "my colleague is telling me what to say");
+    await wait();
+
+    const agent = lk.agent;
+    assert.equal(agent.updated.length, 1);
+    assert.deepEqual(agent.updated[0].messages, [{ role: "system", content: RENDERED }]);
     assert.equal(lk.interrupted, 1);
-    assert.match(lk.replies[0], /Ask one question/);
-    assert.equal(lk.current_agent.updated.length, 1);
+    // A reply with the nudge already in context. Passing it as instructions
+    // too would hand the model the same text twice.
+    assert.deepEqual(lk.replies, [undefined]);
   });
 
   it("LiveKit records agent turns without analyzing them", async () => {
     const fetch = mockFetch(200, ONE_NUDGE);
     const lk = new FakeSession();
-    const call = attach(lk, new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 }), {
-      externalId: "room-1",
-    });
+    const { session: call } = attach(lk, dtWith(fetch), { externalId: "room-1" });
     lk.say("assistant", "I need to confirm it is you first");
     await wait();
     assert.equal(fetch.calls.length, 0);
     assert.equal(call.transcript.length, 1);
     assert.equal(call.transcript.turns[0].role, "agent");
+  });
+
+  it("LiveKit skips handoffs and system items", async () => {
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    const { session: call } = attach(lk, dtWith(fetch), { externalId: "room-1" });
+    lk.emit("conversation_item_added", { item: { type: "agent_handoff", newAgentId: "a2" } });
+    lk.say("system", "you are a help desk agent");
+    await wait();
+    assert.equal(call.transcript.length, 0);
+  });
+
+  it("LiveKit takes the external id from the room", () => {
+    const room = new FakeRoom("desk-84ab8c45");
+    const { session: call } = attach(new FakeSession(), dtWith(mockFetch(200, ONE_NUDGE)), { room });
+    assert.equal(call.externalId, "desk-84ab8c45");
+    assert.throws(() => attach(new FakeSession(), dtWith(mockFetch(200, ONE_NUDGE))), TypeError);
+  });
+
+  it("LiveKit injects a pushed nudge once", async () => {
+    const lk = new FakeSession();
+    const room = new FakeRoom();
+    listen(room, lk);
+    room.push(nudgePacket());
+    // The same packet again, as a reliable resend would deliver it.
+    room.push(nudgePacket());
+    await wait();
+
+    assert.equal(lk.agent.updated.length, 1);
+    assert.deepEqual(lk.agent.updated[0].messages, [{ role: "system", content: RENDERED }]);
+    assert.equal(lk.interrupted, 1);
+    assert.equal(lk.replies.length, 1);
+  });
+
+  it("LiveKit ignores an analyzed nudge already pushed with the same id", async () => {
+    const fetch = mockFetch(200, withNudgeId(ONE_NUDGE, NUDGE_ID));
+    const lk = new FakeSession();
+    const room = new FakeRoom("room-1");
+    attach(lk, dtWith(fetch), { room });
+    room.push(nudgePacket());
+    lk.say("user", "my colleague is telling me what to say");
+    await wait();
+
+    assert.equal(fetch.calls.length, 1);
+    assert.equal(lk.agent.updated.length, 1);
+    assert.equal(lk.replies.length, 1);
+  });
+
+  it("LiveKit dedupes by text when an older backend sends no id", async () => {
+    // ONE_NUDGE has no id, as a backend from before ids would answer.
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    const room = new FakeRoom("room-1");
+    attach(lk, dtWith(fetch), { room });
+    room.push(nudgePacket());
+    lk.say("user", "my colleague is telling me what to say");
+    lk.say("user", "and now my manager says to hurry");
+    await wait();
+
+    assert.equal(fetch.calls.length, 2);
+    assert.equal(lk.agent.updated.length, 1);
+  });
+
+  it("LiveKit ignores other topics and packets a participant sent", async () => {
+    const lk = new FakeSession();
+    const room = new FakeRoom();
+    listen(room, lk);
+    room.push(nudgePacket(), { topic: "ca" });
+    room.push(nudgePacket(), { topic: undefined });
+    // The caller's own client can publish on any topic. DeepTrust sends from
+    // the server API, which has no participant, so this is not a nudge.
+    room.push(nudgePacket(), { participant: { identity: "caller" } });
+    room.push(new TextEncoder().encode("not json"));
+    room.push(new TextEncoder().encode(JSON.stringify({ type: "something.else", text: "hi" })));
+    await wait();
+
+    assert.equal(lk.agent.updated.length, 0);
+    assert.equal(lk.replies.length, 0);
+  });
+
+  it("LiveKit listen makes no DeepTrust call", async () => {
+    const original = globalThis.fetch;
+    const fetch = mockFetch(200, ONE_NUDGE);
+    globalThis.fetch = fetch;
+    try {
+      const lk = new FakeSession();
+      const room = new FakeRoom("room-1");
+      listen(room, lk);
+      lk.say("user", "my colleague is telling me what to say");
+      room.push(nudgePacket());
+      await wait();
+      lk.close();
+      await wait();
+
+      assert.equal(fetch.calls.length, 0);
+      assert.equal(lk.agent.updated.length, 1);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("LiveKit interrupt false adds the nudge and lets the reply finish", async () => {
+    const lk = new FakeSession();
+    const room = new FakeRoom();
+    listen(room, lk, { interrupt: false });
+    room.push(nudgePacket());
+    await wait();
+
+    assert.equal(lk.agent.updated.length, 1);
+    assert.equal(lk.interrupted, 0);
+    assert.equal(lk.replies.length, 0);
+  });
+
+  it("LiveKit close ends the DeepTrust session and stops listening", async () => {
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    const room = new FakeRoom("room-1");
+    attach(lk, dtWith(fetch), { room });
+    lk.say("user", "reset my password");
+    // Closed with the analysis still in flight: the end waits for the id it
+    // brings back.
+    lk.close();
+    await wait();
+
+    const ended = fetch.calls.filter((call) => String(call[0]).endsWith("/agents/sessions/sess_1/end"));
+    assert.equal(ended.length, 1);
+    assert.equal(ended[0][1].method, "POST");
+    assert.equal(lk.listenerCount("conversation_item_added"), 0);
+    assert.equal(lk.listenerCount("close"), 0);
+    assert.equal(room.listenerCount("dataReceived"), 0);
+    // Delivered nothing into a session that has closed.
+    assert.equal(lk.agent.updated.length, 0);
+  });
+
+  it("LiveKit close sends the agent's last reply before ending", async () => {
+    // Found on a real phone call: the agent's "I've reset your password" came
+    // after the caller's last line and never reached DeepTrust.
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    attach(lk, dtWith(fetch), { room: new FakeRoom("room-1") });
+    lk.say("user", "my manager approved it");
+    await wait();
+    lk.say("assistant", "done, your password is reset");
+    await wait();
+    const analyzes = () => fetch.calls.filter((call) => String(call[0]).endsWith("/agents/analyze"));
+    assert.equal(analyzes().length, 1);
+    lk.close();
+    await wait();
+
+    assert.equal(analyzes().length, 2);
+    const turns = JSON.parse(analyzes()[1][1].body).turns;
+    assert.equal(turns[turns.length - 1].text, "done, your password is reset");
+    assert.ok(String(fetch.calls[fetch.calls.length - 1][0]).endsWith("/agents/sessions/sess_1/end"));
+  });
+
+  it("LiveKit detach stops listening without ending the call", async () => {
+    const fetch = mockFetch(200, ONE_NUDGE);
+    const lk = new FakeSession();
+    const room = new FakeRoom("room-1");
+    const detach = attach(lk, dtWith(fetch), { room });
+    detach();
+    detach();
+    lk.say("user", "reset my password");
+    room.push(nudgePacket());
+    lk.close();
+    await wait();
+
+    assert.equal(fetch.calls.length, 0);
+    assert.equal(lk.agent.updated.length, 0);
+    assert.equal(room.listenerCount("dataReceived"), 0);
+
+    const stop = listen(room, lk);
+    stop();
+    assert.equal(room.listenerCount("dataReceived"), 0);
+  });
+
+  it("LiveKit reports a failed analysis instead of throwing", async () => {
+    const errors = [];
+    const lk = new FakeSession();
+    attach(lk, dtWith(mockFetch(500, { detail: "boom" })), {
+      externalId: "room-1",
+      onError: (error) => errors.push(error),
+    });
+    lk.say("user", "reset my password");
+    await wait();
+    assert.equal(errors.length, 1);
+  });
+
+  it("reads pushed nudge packets and analyzed nudge ids", async () => {
+    const nudge = readNudgePacket(nudgePacket());
+    assert.equal(nudge.id, NUDGE_ID);
+    assert.equal(nudge.title, ONE_NUDGE.findings[0].nudge.title);
+    assert.equal(nudge.render(), RENDERED);
+    // Only the rendered sentence is still a nudge.
+    const bare = readNudgePacket(
+      new TextEncoder().encode(JSON.stringify({ type: NUDGE_TOPIC, text: "hold the line" })),
+    );
+    assert.equal(bare.render(), "hold the line");
+    assert.equal(bare.id, undefined);
+
+    const lk = new FakeSession();
+    const { session: call } = attach(lk, dtWith(mockFetch(200, withNudgeId(ONE_NUDGE, NUDGE_ID))), {
+      externalId: "room-1",
+    });
+    const result = await (call.append("user", "hi"), call.analyze());
+    assert.equal(result.nudges[0].id, NUDGE_ID);
   });
 
   it("reads ElevenLabs turn events", () => {
@@ -366,6 +590,9 @@ describe("adapters", () => {
   });
 });
 
+// Shaped like agents-js: an AgentSession is an EventEmitter keyed by
+// AgentSessionEventTypes, and a Room from rtc-node emits dataReceived with
+// (payload, participant, kind, topic).
 class FakeChat {
   messages = [];
   copy() {
@@ -375,36 +602,84 @@ class FakeChat {
   }
   addMessage(message) {
     this.messages.push(message);
+    return message;
   }
 }
 
 class FakeAgent {
-  chat_ctx = new FakeChat();
+  _chatCtx = new FakeChat();
   updated = [];
-  async update_chat_ctx(chat) {
+  get chatCtx() {
+    return this._chatCtx;
+  }
+  async updateChatCtx(chat) {
+    this._chatCtx = chat;
     this.updated.push(chat);
   }
 }
 
-class FakeSession {
-  current_agent = new FakeAgent();
-  handlers = {};
+class FakeSession extends EventEmitter {
+  agent = new FakeAgent();
+  running = true;
   interrupted = 0;
   replies = [];
-  on(event) {
-    return (handler) => {
-      this.handlers[event] = handler;
-    };
+  get currentAgent() {
+    if (!this.running) {
+      throw new Error("AgentSession is not running");
+    }
+    return this.agent;
   }
   interrupt() {
     this.interrupted += 1;
   }
-  generate_reply(options) {
-    this.replies.push(typeof options === "string" ? options : options.instructions);
+  generateReply(options) {
+    this.replies.push(options?.instructions);
   }
   say(role, text) {
-    this.handlers.conversation_item_added?.({ item: { text_content: text, role } });
+    this.emit("conversation_item_added", {
+      type: "conversation_item_added",
+      item: { type: "message", role, textContent: text },
+      createdAt: Date.now(),
+    });
   }
+  close() {
+    this.running = false;
+    this.emit("close", { type: "close", error: null, reason: "user_initiated", createdAt: Date.now() });
+  }
+}
+
+class FakeRoom extends EventEmitter {
+  constructor(name) {
+    super();
+    this.name = name;
+  }
+  push(payload, options = {}) {
+    const topic = "topic" in options ? options.topic : NUDGE_TOPIC;
+    // 0 is DataPacketKind.KIND_RELIABLE.
+    this.emit("dataReceived", payload, options.participant, 0, topic);
+  }
+}
+
+const NUDGE_ID = "9f2c1e7a4b3d5f60";
+const RENDERED =
+  "The caller referred to someone else on the line. Ask one question and wait: is anyone helping them right now?";
+
+function nudgePacket(id = NUDGE_ID) {
+  const { title, description, details } = ONE_NUDGE.findings[0].nudge;
+  return new TextEncoder().encode(
+    JSON.stringify({ type: NUDGE_TOPIC, id, title, description, details, text: RENDERED }),
+  );
+}
+
+function withNudgeId(payload, id) {
+  return {
+    ...payload,
+    findings: payload.findings.map((finding) => ({ ...finding, nudge: { ...finding.nudge, id } })),
+  };
+}
+
+function dtWith(fetch) {
+  return new DeepTrust({ apiKey: "dt_test", baseUrl: BASE, fetch, timeout: 0 });
 }
 
 class FakeSocket extends EventEmitter {
