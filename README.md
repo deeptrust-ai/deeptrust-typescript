@@ -56,15 +56,49 @@ await new DeepTrust().watch(conversationId);
 
 ## LiveKit
 
+For agents built on [agents-js](https://github.com/livekit/agents-js). Install
+the LiveKit packages next to this one; they are optional peer dependencies, and
+this adapter imports only their types.
+
+```bash
+npm install deeptrust-ai @livekit/agents @livekit/rtc-node
+```
+
+The cloud way. With the LiveKit project connected in the DeepTrust dashboard,
+DeepTrust follows the call itself and pushes each nudge into the room on topic
+`deeptrust.nudge`. `listen` hands them to the agent and never calls the
+DeepTrust API:
+
+```ts
+import { listen } from "deeptrust-ai/agents/livekit";
+
+listen(ctx.room, session, { agent });
+```
+
+The SDK way. `attach` sends every turn from the worker and analyzes each caller
+turn. With `room` it also takes pushed nudges, and a nudge that arrives both
+ways is delivered once:
+
 ```ts
 import { DeepTrust } from "deeptrust-ai/agents";
 import { attach } from "deeptrust-ai/agents/livekit";
 
-attach(session, new DeepTrust(), {
-  externalId: ctx.room.name,
+const detach = attach(session, new DeepTrust(), {
+  room: ctx.room,         // also the external id, unless you pass externalId
+  agent,
   user: caller,
 });
+detach.session;           // the DeepTrust session: transcript and findings
 ```
+
+A nudge is added to the agent's chat context as a system message, then the
+reply in progress is interrupted and a new one generated with the nudge in
+context. Pass `interrupt: false` to let the current reply finish. Both calls
+stop when the session closes, and `attach` then ends the DeepTrust call. Each
+returns a function that stops listening early. A pushed packet is only taken
+when it has no sender, which is how the LiveKit server API delivers it, so the
+caller's own client cannot publish a nudge. See
+[`examples/livekit`](examples/livekit).
 
 ## ElevenLabs monitor socket
 

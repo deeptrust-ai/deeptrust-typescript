@@ -125,7 +125,13 @@ function toNudge(value: unknown): Nudge | undefined {
   if (!isObject(value)) {
     return undefined;
   }
-  return new Nudge(String(value.title ?? ""), String(value.description ?? ""), String(value.details ?? ""));
+  const id = typeof value.id === "string" && value.id ? value.id : undefined;
+  return new Nudge(
+    String(value.title ?? ""),
+    String(value.description ?? ""),
+    String(value.details ?? ""),
+    id,
+  );
 }
 
 function toProgress(value: unknown): SopProgress {

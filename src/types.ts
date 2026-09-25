@@ -111,11 +111,18 @@ export class Nudge {
   readonly title: string;
   readonly description: string;
   readonly details: string;
+  /**
+   * Stable for the same nudge wherever it arrives: on an analysis and on a
+   * pushed LiveKit packet alike, so a receiver that gets it both ways acts on
+   * it once. Older backends do not send it.
+   */
+  readonly id: string | undefined;
 
-  constructor(title: string, description: string, details: string) {
+  constructor(title: string, description: string, details: string, id?: string) {
     this.title = title;
     this.description = description;
     this.details = details;
+    this.id = id;
   }
 
   render(): string {
