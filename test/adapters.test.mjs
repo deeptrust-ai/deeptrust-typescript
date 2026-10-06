@@ -3,7 +3,7 @@ import { EventEmitter, setMaxListeners } from "node:events";
 import { describe, it } from "node:test";
 import { DeepTrust } from "../dist/agents/index.js";
 import { contextualUpdateCommand, Monitor, readTurn } from "../dist/agents/elevenlabs.js";
-import { attach, listen, NUDGE_TOPIC, readNudgePacket } from "../dist/agents/livekit.js";
+import { attach, listen, NUDGE_TOPIC, readNudgePacket, tagCall } from "../dist/agents/livekit.js";
 import {
   addMessageCommand,
   Bridge,
@@ -99,6 +99,33 @@ describe("adapters", () => {
     const { session: call } = attach(new FakeSession(), dtWith(mockFetch(200, ONE_NUDGE)), { room });
     assert.equal(call.externalId, "desk-84ab8c45");
     assert.throws(() => attach(new FakeSession(), dtWith(mockFetch(200, ONE_NUDGE))), TypeError);
+  });
+
+  it("LiveKit tagCall sets deeptrust_* attributes, skipping empty values", async () => {
+    const room = new FakeRoom("room-1");
+    let set;
+    room.localParticipant = { setAttributes: async (attributes) => (set = attributes) };
+    await tagCall(room, { testName: "gpt-4o-vs-gpt-4.1", llm: "openai/gpt-4.1", stt: undefined, tts: "" });
+    assert.deepEqual(set, { deeptrust_test_name: "gpt-4o-vs-gpt-4.1", deeptrust_llm: "openai/gpt-4.1" });
+  });
+
+  it("LiveKit tagCall refuses a room that is not connected", async () => {
+    await assert.rejects(() => tagCall(new FakeRoom("room-1"), { testName: "t1" }), /connected room/);
+  });
+
+  it("LiveKit config over the API's limits fails up front", () => {
+    const dt = dtWith(mockFetch(200, ONE_NUDGE));
+    assert.throws(() => attach(new FakeSession(), dt, { externalId: "r", config: { llm: "x".repeat(1025) } }), RangeError);
+    assert.throws(() => attach(new FakeSession(), dt, { externalId: "r", config: { prompt: "x".repeat(65537) } }), RangeError);
+    attach(new FakeSession(), dt, { externalId: "r", config: { prompt: "x".repeat(5000) } });
+  });
+
+  it("LiveKit attach records the config as session metadata", () => {
+    const { session: call } = attach(new FakeSession(), dtWith(mockFetch(200, ONE_NUDGE)), {
+      externalId: "room-1",
+      config: { testName: "t1", promptId: "order@v3" },
+    });
+    assert.deepEqual(call.metadata, { deeptrust_test_name: "t1", deeptrust_prompt_id: "order@v3" });
   });
 
   it("LiveKit injects a pushed nudge once", async () => {
