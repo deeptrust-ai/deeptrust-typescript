@@ -59,6 +59,48 @@ export interface AttachOptions extends DeliveryOptions {
   externalId?: string;
   user?: User;
   onAnalysis?: (analysis: Analysis) => void;
+  /** What the call ran on, recorded with it. See `tagCall`. */
+  config?: AgentConfig;
+}
+
+/**
+ * What a call ran on, for comparing versions (A/B tests): e.g. `testName`,
+ * `prompt`, `promptId`, `llm`, `stt`, `tts`. Keys become `deeptrust_<snake_case>`.
+ */
+export type AgentConfig = Record<string, string | undefined>;
+
+// The API's metadata limits, checked here so a bad config fails once, not every request.
+const MAX_CONFIG_KEYS = 32;
+const MAX_CONFIG_VALUE = 1024;
+const MAX_PROMPT = 65536;
+
+function configAttributes(config: AgentConfig): Record<string, string> {
+  const attributes: Record<string, string> = Object.fromEntries(
+    Object.entries(config)
+      .filter((entry): entry is [string, string] => Boolean(entry[1]))
+      .map(([key, value]) => [`deeptrust_${key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)}`, value]),
+  );
+  if (Object.keys(attributes).length > MAX_CONFIG_KEYS) {
+    throw new RangeError(`config has more than ${MAX_CONFIG_KEYS} keys`);
+  }
+  for (const [key, value] of Object.entries(attributes)) {
+    const limit = key === "deeptrust_prompt" ? MAX_PROMPT : MAX_CONFIG_VALUE;
+    if (value.length > limit) {
+      throw new RangeError(`config ${key} is longer than ${limit} characters`);
+    }
+  }
+  return attributes;
+}
+
+/**
+ * Tag the call with what it ran on, for the cloud way. Call after `ctx.connect()`.
+ * Attributes reach every participant: with browser callers, send `promptId`, not `prompt`.
+ */
+export async function tagCall(room: Room, config: AgentConfig): Promise<void> {
+  if (!room.localParticipant) {
+    throw new Error("tagCall needs a connected room");
+  }
+  await room.localParticipant.setAttributes(configAttributes(config));
 }
 
 /** Stops listening. Calling it more than once is harmless. */
@@ -117,6 +159,7 @@ export function attach(session: voice.AgentSession, dt: DeepTrust, options: Atta
     externalId,
     platform: "livekit",
     ...(options.user !== undefined ? { user: options.user } : {}),
+    ...(options.config !== undefined ? { metadata: configAttributes(options.config) } : {}),
   });
   const inbox = createInbox(session, options);
   const stopPush = options.room ? subscribeToPushes(options.room, inbox) : () => {};
